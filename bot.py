@@ -9,63 +9,62 @@ from config import API_TOKEN
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
-# States define karna (User se data lene ke liye)
-class DeploySteps(StatesGroup):
-    waiting_for_repo = State()
-    waiting_for_vars = State()
+class DeployState(StatesGroup):
+    asking_repo = State()
+    asking_vars = State()
 
 @dp.message(F.text == "/start")
-async def cmd_start(message: types.Message):
+async def start_cmd(message: types.Message):
     builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="🚀 Create Web Service", callback_data="start_deploy"))
-    await message.answer("Hello! Render Deployer Bot me aapka swagat hai.\nNaya bot deploy karne ke liye niche button dabayein.", reply_markup=builder.as_markup())
-
-# Deployment shuru karne ka handler
-@dp.callback_query(F.data == "start_deploy")
-async def ask_repo(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.answer("🔗 Apne GitHub Repo ka URL bhejiye:")
-    await state.set_state(DeploySteps.waiting_for_repo)
-    await callback.answer()
-
-# Repo URL milne ke baad
-@dp.message(DeploySteps.waiting_for_repo)
-async def ask_vars(message: types.Message, state: FSMContext):
-    await state.update_data(repo_url=message.text)
-    await message.answer("📝 Ab apne **Variables** bhejiye niche diye gaye format mein:\n\n`API_ID=12345\nAPI_HASH=abcd\nBOT_TOKEN=789:xyz`\n\n(Ek line mein ek variable)")
-    await state.set_state(DeploySteps.waiting_for_vars)
-
-# Variables milne ke baad Actual Deploy
-@dp.message(DeploySteps.waiting_for_vars)
-async def do_deploy(message: types.Message, state: FSMContext):
-    user_data = await state.get_data()
-    repo_url = user_data['repo_url']
+    builder.row(types.InlineKeyboardButton(text="🚀 Create Web Service", callback_data="deploy_new"))
+    builder.row(types.InlineKeyboardButton(text="ℹ️ Help / Support", callback_data="help"))
     
-    # Text ko dictionary me convert karna
-    try:
-        lines = message.text.split('\n')
-        env_dict = {line.split('=')[0].strip(): line.split('=')[1].strip() for line in lines if '=' in line}
-    except:
-        await message.answer("❌ Format galat hai! Dubara try karein (KEY=VALUE).")
+    await message.answer("👋 **Render Multi-ID Deployer**\n\nNiche diye gaye button se deployment shuru karein.", reply_markup=builder.as_markup())
+
+@dp.callback_query(F.data == "deploy_new")
+async def ask_repo_link(call: types.CallbackQuery, state: FSMContext):
+    await call.message.answer("🔗 Apne **GitHub Repository** ka link bhejiye:\n(Example: `https://github.com/user/bot-repo`)")
+    await state.set_state(DeployState.asking_repo)
+    await call.answer()
+
+@dp.message(DeployState.asking_repo)
+async def get_repo_and_ask_vars(message: types.Message, state: FSMContext):
+    if "github.com" not in message.text:
+        await message.answer("❌ Invalid GitHub Link! Dubara bhejiye.")
         return
-
-    key = await get_active_key()
-    status_msg = await message.answer("⏳ Slot check kiya ja raha hai...")
     
+    await state.update_data(repo=message.text)
+    await message.answer("📋 Ab apne **Variables** bhejiye.\nFormat:\n`TOKEN=123\nID=456`...")
+    await state.set_state(DeployState.asking_vars)
+
+@dp.message(DeployState.asking_vars)
+async def process_deployment(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    repo = data['repo']
+    
+    # Parse variables
+    env_vars = {}
+    for line in message.text.split('\n'):
+        if '=' in line:
+            k, v = line.split('=', 1)
+            env_vars[k.strip()] = v.strip()
+
+    status_msg = await message.answer("🔍 Searching for available slot in Render IDs...")
+    
+    key = await get_active_key()
     if not key:
-        await status_msg.edit_text("❌ Sabhi IDs full hain (20/20 bots deployed)!")
+        await status_msg.edit_text("❌ Sabhi Render IDs (10/10) full ho chuki hain!")
         await state.clear()
         return
 
-    await status_msg.edit_text("🚀 Deployment bhej di gayi hai... Please wait.")
+    await status_msg.edit_text("🚀 Deploying your service on Render... Please wait.")
     
-    # Render API call
-    res, code = await deploy_service(key, repo_url, f"Bot-{message.from_user.id}", env_dict)
+    res, status = await deploy_service(key, repo, f"User-{message.from_user.id}", env_vars)
 
-    if code == 201:
-        dashboard_url = f"https://dashboard.render.com/web/{res['id']}"
-        await status_msg.edit_text(f"✅ **Success!**\n\nBot deploy ho raha hai.\nID: `{res['id']}`\n\nAap yahan check kar sakte hain: [Dashboard]({dashboard_url})", parse_mode="Markdown")
+    if status == 201:
+        await status_msg.edit_text(f"✅ **Deployment Successful!**\n\n**Service ID:** `{res['id']}`\n**Status:** Building...")
     else:
-        await status_msg.edit_text(f"❌ **Failed!**\nError: {res.get('message', 'Unknown Error')}")
+        await status_msg.edit_text(f"❌ **Error:** {res.get('message', 'Something went wrong')}")
     
     await state.clear()
 
@@ -74,3 +73,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
